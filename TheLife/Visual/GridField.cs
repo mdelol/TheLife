@@ -1,45 +1,64 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Xml.Serialization;
+using static System.Double;
 
 namespace TheLife.Visual
 {
     public class GridField
     {
-        private readonly Canvas _drawable;
+        private readonly Image _drawable;
         private readonly int _width;
         private readonly int _height;
+        private readonly int _imageWidth;
+        private readonly int _imageHeight;
 
-        private List<GameObject> _objects = new List<GameObject>();
-        private long _redrawTime;
-        private int _redraws = 0;
+        private List<IGameObject> _objects = new List<IGameObject>();
+        private int _redraws;
+        private Mutex _mut;
 
-        public GridField(Canvas drawable, int width, int height, Label fps)
+        public void Clear()
         {
+            _mut.WaitOne();
+            _objects.Clear();
+            _mut.ReleaseMutex();
+        }
+
+        public GridField(Image drawable, int width, int height, int imageWidth, int imageHeight, Label fps)
+        {
+            _mut = new Mutex(true);
             _drawable = drawable;
             _width = width;
             _height = height;
-            DrawGrid();
-            new Thread(() =>
+            _imageWidth = imageWidth;
+            _imageHeight = imageHeight;
+            var i = 0;
+            var thread = new Thread(() =>
             {
-                long i = 0;
-                while (Redraw(i++ / 10))
+                bool t = true;
+                var startTime = DateTime.UtcNow;
+                while (t)
                 {
+                    var dateTime = DateTime.UtcNow;
+                    TimeSpan tr = dateTime - startTime;
+                    startTime = dateTime;
+                    int secondsSinceEpoch = (int)tr.TotalMilliseconds;
+                    t = Redraw(secondsSinceEpoch);
                     _redraws++;
-                    var l = (1000 / 60) - _redrawTime;
-                    if (l > 10)
-                    {
-                        Thread.Sleep((int)l);
-                    }
                 }
-            }).Start();
+
+            });
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
             new Thread(() =>
             {
                 var interrupted = false;
@@ -47,7 +66,6 @@ namespace TheLife.Visual
                 {
                     try
                     {
-
                         fps.Dispatcher.Invoke(() =>
                         {
                             fps.Content = _redraws;
@@ -61,136 +79,92 @@ namespace TheLife.Visual
                     }
                 }
             }).Start();
+            _mut.ReleaseMutex();
         }
 
         public bool Redraw(long timePassed)
         {
-            Stopwatch watch = new Stopwatch();
-            watch.Start();
-            var xUnit = _drawable.ActualWidth / _width;
-            var yUnit = _drawable.ActualHeight / _height;
             try
             {
+                var renderTargetBitmap = new RenderTargetBitmap(_imageWidth, _imageHeight, 100, 100, PixelFormats.Pbgra32);
+                var xUnit = _imageWidth / _width;
+                var yUnit = _imageHeight / _height;
+                Grid grid = new Grid();
+                DrawGrid(grid);
+                grid.Arrange(new Rect(new Size(_imageWidth, _imageHeight)));
+                _mut.WaitOne();
                 _objects.ForEach(x =>
                 {
                     x.Tick(timePassed);
-                    if (x.HasChanged)
-                    {
+                    var drawable = x.GetDrawable(xUnit, yUnit);
+                    ((Grid)drawable.Parent)?.Children.Remove(drawable);
+                    grid.Children.Add(drawable);
+                });
+                grid.UpdateLayout();
 
-                        _drawable.Dispatcher.InvokeAsync(delegate
-                        {
-                            _drawable.Children.Remove(x.GetPreviousDrawable);
-                            var drawable = x.GetDrawable(yUnit, xUnit);
-                            Canvas.SetLeft(drawable, x.X * xUnit);
-                            Canvas.SetTop(drawable, x.Y * yUnit);
 
-                            _drawable.Children.Add(drawable);
-                        });
-                    }
+                renderTargetBitmap.Render(grid);
+                _mut.ReleaseMutex();
 
+                renderTargetBitmap.Freeze();
+
+                _drawable.Dispatcher.Invoke(() =>
+                {
+                    _drawable.Source = renderTargetBitmap;
                 });
             }
-            catch (TaskCanceledException e)
+            catch (OperationCanceledException)
             {
                 return false;
             }
-            finally
-            {
-                watch.Stop();
-            }
-            _redrawTime = watch.ElapsedMilliseconds;
             return true;
+
         }
 
-        public void AddGameObject(GameObject gObject)
+        public void RemoveGameObject(IGameObject gObject)
         {
+            _mut.WaitOne();
+            _objects.Remove(gObject);
+            _mut.ReleaseMutex();
+        }
+
+        public void AddGameObject(IGameObject gObject)
+        {
+            _mut.WaitOne();
             _objects.Add(gObject);
+            _mut.ReleaseMutex();
         }
 
-        private void DrawGrid()
+        private void DrawGrid(Grid bitmap)
         {
-            var deltaX = _drawable.ActualWidth / _width;
-            for (int i = 1; i != _width; i++)
+            var deltaX = _imageWidth / _width;
+            for (int i = 0; i != _width; i++)
             {
                 var myLine = new Line();
-                myLine.Stroke = System.Windows.Media.Brushes.Black;
+                myLine.Stroke = Brushes.Black;
                 var x = i * deltaX;
                 myLine.X1 = x;
                 myLine.X2 = x;
                 myLine.Y1 = 0;
-                myLine.Y2 = _drawable.ActualHeight;
-                _drawable.Children.Add(myLine);
+                myLine.Y2 = _imageHeight;
+                myLine.Arrange(new Rect(new Size(_imageWidth, _imageHeight)));
+                bitmap.Children.Add(myLine);
             }
 
-            var deltaY = _drawable.ActualHeight / _height;
-            for (int i = 1; i != _width; i++)
+            var deltaY = _imageHeight / _height;
+            for (int i = 0; i != _width; i++)
             {
                 var myLine = new Line();
-                myLine.Stroke = System.Windows.Media.Brushes.Black;
+                myLine.Stroke = Brushes.Black;
                 var y = i * deltaY;
                 myLine.Y1 = y;
                 myLine.Y2 = y;
                 myLine.X1 = 0;
-                myLine.X2 = _drawable.ActualWidth;
-                _drawable.Children.Add(myLine);
+                myLine.X2 = _imageWidth;
+                myLine.Arrange(new Rect(new Size(_imageWidth, _imageHeight)));
+                bitmap.Children.Add(myLine);
             }
         }
 
-    }
-
-    public interface GameObject
-    {
-        double X { get; }
-        double Y { get; }
-        void Tick(long timePassed);
-        Shape GetDrawable(double xMult, double yMult);
-        Shape GetPreviousDrawable { get; }
-        bool HasChanged { get; }
-    }
-
-    public class CircleGameObject : GameObject
-    {
-        private readonly int _height;
-        private readonly int _width;
-        private Ellipse _lastDrawable;
-        private double _x;
-        private double _y;
-
-        public double X
-        {
-            get { return _x; }
-        }
-
-        public double Y
-        {
-            get { return _y; }
-        }
-
-        public void Tick(long timePassed)
-        {
-            _x += timePassed / 1000D;
-            _y += timePassed / 1000D;
-        }
-
-        public CircleGameObject(int height, int width, int startPositionX, int startPositionY)
-        {
-            _x = startPositionX;
-            _y = startPositionY;
-            _height = height;
-            _width = width;
-        }
-
-        public Shape GetDrawable(double xMult, double yMult)
-        {
-            if(_lastDrawable == null)
-            _lastDrawable = new Ellipse();
-            _lastDrawable.Height = _height * xMult;
-            _lastDrawable.Width = _width * yMult;
-            _lastDrawable.Fill = new SolidColorBrush(Colors.Black);
-            return _lastDrawable;
-        }
-
-        public Shape GetPreviousDrawable => _lastDrawable;
-        public bool HasChanged => true;
     }
 }

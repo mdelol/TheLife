@@ -14,6 +14,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 using TheLife.Visual;
+using Timer = System.Timers.Timer;
 
 namespace TheLife
 {
@@ -29,9 +30,9 @@ namespace TheLife
 
         private void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
         {
-            var gridField = new GridField(myCanvas,50,50, fps);
-            for(int i=0;i!=1000;i++)
-            gridField.AddGameObject(new CircleGameObject(1,1,0,0));
+            var gridField = new GridField(MyImage, 50, 50, 900, 900, fps);
+            TheLife.Logic.TheLife.Start(50, 50, gridField).Start();
         }
+
     }
 }
